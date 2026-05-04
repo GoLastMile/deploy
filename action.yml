@@ -1,0 +1,31 @@
+name: 'LastMile Deploy'
+description: 'Deploy to production with automatic error fixing'
+author: 'LastMile'
+
+branding:
+  icon: 'upload-cloud'
+  color: 'blue'
+
+inputs:
+  api-key:
+    description: 'LastMile API key'
+    required: true
+  max-attempts:
+    description: 'Maximum retry attempts before giving up'
+    required: false
+    default: '5'
+  railway-token:
+    description: 'Railway API token for deployment'
+    required: false
+
+outputs:
+  url:
+    description: 'Deployed application URL'
+  status:
+    description: 'Final deployment status (success/failed)'
+  attempt:
+    description: 'Number of attempts made'
+
+runs:
+  using: 'node20'
+  main: 'dist/index.js'
