@@ -127,4 +127,47 @@ export class LastMileAPI {
   }): Promise<CompleteDeploymentResponse> {
     return this.request<CompleteDeploymentResponse>('POST', '/v1/deploy/complete', data);
   }
+
+  async getDeploymentStatus(deploymentId: string): Promise<{
+    id: string;
+    status: string;
+    url?: string;
+    error?: string;
+  }> {
+    return this.request<{
+      id: string;
+      status: string;
+      url?: string;
+      error?: string;
+    }>('GET', `/v1/cloud/deploy/${deploymentId}`);
+  }
+
+  /**
+   * Poll for deployment completion
+   * Returns when status is 'live' or 'failed', or timeout
+   */
+  async waitForDeployment(
+    deploymentId: string,
+    timeoutMs: number = 10 * 60 * 1000, // 10 minutes
+    pollIntervalMs: number = 5000
+  ): Promise<{ status: string; url?: string; error?: string }> {
+    const startTime = Date.now();
+
+    while (Date.now() - startTime < timeoutMs) {
+      const result = await this.getDeploymentStatus(deploymentId);
+
+      if (result.status === 'live') {
+        return { status: 'success', url: result.url };
+      }
+
+      if (result.status === 'failed') {
+        return { status: 'failed', error: result.error };
+      }
+
+      // Still in progress - wait and poll again
+      await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+    }
+
+    return { status: 'timeout', error: 'Deployment timed out after 10 minutes' };
+  }
 }

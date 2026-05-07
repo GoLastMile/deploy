@@ -29981,6 +29981,29 @@ class LastMileAPI {
     async completeDeployment(data) {
         return this.request('POST', '/v1/deploy/complete', data);
     }
+    async getDeploymentStatus(deploymentId) {
+        return this.request('GET', `/v1/cloud/deploy/${deploymentId}`);
+    }
+    /**
+     * Poll for deployment completion
+     * Returns when status is 'live' or 'failed', or timeout
+     */
+    async waitForDeployment(deploymentId, timeoutMs = 10 * 60 * 1000, // 10 minutes
+    pollIntervalMs = 5000) {
+        const startTime = Date.now();
+        while (Date.now() - startTime < timeoutMs) {
+            const result = await this.getDeploymentStatus(deploymentId);
+            if (result.status === 'live') {
+                return { status: 'success', url: result.url };
+            }
+            if (result.status === 'failed') {
+                return { status: 'failed', error: result.error };
+            }
+            // Still in progress - wait and poll again
+            await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+        }
+        return { status: 'timeout', error: 'Deployment timed out after 10 minutes' };
+    }
 }
 exports.LastMileAPI = LastMileAPI;
 
@@ -30263,7 +30286,7 @@ async function run() {
         const branch = github.context.ref.replace('refs/heads/', '');
         const commitSha = github.context.sha;
         core.info(`Deploying ${repo}@${branch} (${commitSha.substring(0, 7)})`);
-        // Start deployment with LastMile (this actually deploys to Railway)
+        // Start deployment with LastMile (this triggers Railway deployment)
         const deployment = await api.startDeployment({
             repoUrl: `https://github.com/${repo}`,
             branch,
@@ -30271,31 +30294,26 @@ async function run() {
         });
         const deploymentId = deployment.deploymentId;
         core.info(`Deployment started: ${deploymentId}`);
-        core.info(`Status: ${deployment.status}`);
-        // Check deployment result from LastMile API (which deployed to Railway)
-        const deploymentSuccess = deployment.status === 'live' || deployment.status === 'success';
-        const deploymentUrl = deployment.url;
-        const deploymentError = deployment.error;
-        if (deploymentSuccess) {
-            core.info(`Deployment successful: ${deploymentUrl}`);
-        }
-        else if (deploymentError) {
-            core.info(`Deployment failed: ${deploymentError}`);
-        }
-        if (deploymentSuccess) {
-            // Success! Mark complete and exit
-            await api.completeDeployment({
-                deploymentId,
-                status: 'success',
-                url: deploymentUrl,
-            });
-            core.setOutput('url', deploymentUrl);
+        core.info(`Initial status: ${deployment.status}`);
+        // Poll for deployment completion (async - deployment happens in background)
+        core.info('Waiting for deployment to complete...');
+        const result = await api.waitForDeployment(deploymentId, 10 * 60 * 1000, 10000);
+        core.info(`Final status: ${result.status}`);
+        if (result.status === 'success') {
+            core.setOutput('url', result.url);
             core.setOutput('status', 'success');
             core.setOutput('attempt', currentAttempt);
-            core.info(`Deployment successful: ${deploymentUrl}`);
+            core.info(`Deployment successful: ${result.url}`);
+            return;
+        }
+        if (result.status === 'timeout') {
+            core.setFailed('Deployment timed out after 10 minutes');
+            core.setOutput('status', 'timeout');
+            core.setOutput('attempt', currentAttempt);
             return;
         }
         // Deployment failed - get fix from LastMile
+        const deploymentError = result.error;
         core.info('Deployment failed. Analyzing error...');
         // Read project files for context
         const files = await (0, git_js_1.readProjectFiles)();
