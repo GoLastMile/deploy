@@ -9,7 +9,6 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { LastMileAPI } from './api.js';
-import { RailwayClient, getRailwayContext } from './railway.js';
 import {
   parseRetryMetadata,
   commitAndPush,
@@ -22,7 +21,6 @@ async function run(): Promise<void> {
     // Get inputs
     const apiKey = core.getInput('api-key', { required: true });
     const maxAttempts = parseInt(core.getInput('max-attempts') || '5', 10);
-    const railwayToken = core.getInput('railway-token');
 
     // Initialize API client
     const api = new LastMileAPI(apiKey);
@@ -47,55 +45,26 @@ async function run(): Promise<void> {
 
     core.info(`Deploying ${repo}@${branch} (${commitSha.substring(0, 7)})`);
 
-    // Register deployment with LastMile
-    const { deploymentId } = await api.startDeployment({
+    // Start deployment with LastMile (this actually deploys to Railway)
+    const deployment = await api.startDeployment({
       repoUrl: `https://github.com/${repo}`,
       branch,
       commitSha,
     });
 
-    core.info(`Deployment registered: ${deploymentId}`);
+    const deploymentId = deployment.deploymentId;
+    core.info(`Deployment started: ${deploymentId}`);
+    core.info(`Status: ${deployment.status}`);
 
-    // Check if we have Railway context (means Railway GitHub integration is active)
-    const railwayContext = getRailwayContext();
+    // Check deployment result from LastMile API (which deployed to Railway)
+    const deploymentSuccess = deployment.status === 'live' || deployment.status === 'success';
+    const deploymentUrl = deployment.url;
+    const deploymentError = deployment.error;
 
-    let deploymentSuccess = false;
-    let deploymentUrl: string | undefined;
-    let railwayDeploymentId: string | undefined;
-
-    if (railwayContext.serviceId && railwayContext.environmentId && railwayToken) {
-      // Railway GitHub integration is handling the deployment
-      // We just need to wait for it to complete
-      core.info('Waiting for Railway deployment...');
-
-      const railway = new RailwayClient(railwayToken);
-      const deployment = await railway.waitForDeployment(
-        railwayContext.serviceId,
-        railwayContext.environmentId
-      );
-
-      railwayDeploymentId = deployment.id;
-      deploymentSuccess = deployment.status === 'SUCCESS';
-      deploymentUrl = deployment.url;
-
-      core.info(`Railway deployment ${deployment.status}: ${deploymentUrl || 'no URL'}`);
-    } else {
-      // No Railway integration - deployment is handled elsewhere
-      // For now, we assume the deployment happens via Railway's native GitHub integration
-      // and we're just called to handle failures
-      core.info('No Railway token provided - assuming deployment is handled externally');
-      core.info('This action will only handle fix generation if called after a failure');
-
-      // Check if this is being run after a failure (indicated by retry metadata)
-      if (!retryMeta) {
-        core.info('First run without Railway token - nothing to do');
-        core.info('Configure Railway GitHub integration or provide railway-token input');
-        return;
-      }
-
-      // We're in a retry loop, so previous deployment must have failed
-      deploymentSuccess = false;
-      railwayDeploymentId = 'unknown';
+    if (deploymentSuccess) {
+      core.info(`Deployment successful: ${deploymentUrl}`);
+    } else if (deploymentError) {
+      core.info(`Deployment failed: ${deploymentError}`);
     }
 
     if (deploymentSuccess) {
@@ -124,7 +93,7 @@ async function run(): Promise<void> {
     // Call LastMile API to analyze failure and get fix
     const analysis = await api.analyzeFailure({
       deploymentId,
-      railwayDeploymentId: railwayDeploymentId || 'unknown',
+      railwayDeploymentId: deploymentId, // Use our deployment ID
       attempt: currentAttempt,
       files,
     });

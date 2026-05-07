@@ -29956,7 +29956,24 @@ class LastMileAPI {
         return response.json();
     }
     async startDeployment(data) {
-        return this.request('POST', '/v1/deploy/start', data);
+        // Use cloud deploy endpoint which actually deploys to Railway
+        const response = await this.request('POST', '/v1/cloud/deploy', {
+            projectName: data.projectName || this.extractProjectName(data.repoUrl),
+            repoUrl: data.repoUrl,
+            branch: data.branch,
+            withDatabase: data.withDatabase || false,
+        });
+        return {
+            deploymentId: response.id,
+            status: response.status,
+            url: response.url,
+            error: response.error,
+        };
+    }
+    extractProjectName(repoUrl) {
+        // Extract repo name from URL: https://github.com/owner/repo -> repo
+        const match = repoUrl.match(/\/([^\/]+?)(?:\.git)?$/);
+        return match ? match[1] : 'app';
     }
     async analyzeFailure(data) {
         return this.request('POST', '/v1/deploy/analyze-failure', data);
@@ -30223,14 +30240,12 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 const core = __importStar(__nccwpck_require__(6966));
 const github = __importStar(__nccwpck_require__(4903));
 const api_js_1 = __nccwpck_require__(7822);
-const railway_js_1 = __nccwpck_require__(3081);
 const git_js_1 = __nccwpck_require__(3506);
 async function run() {
     try {
         // Get inputs
         const apiKey = core.getInput('api-key', { required: true });
         const maxAttempts = parseInt(core.getInput('max-attempts') || '5', 10);
-        const railwayToken = core.getInput('railway-token');
         // Initialize API client
         const api = new api_js_1.LastMileAPI(apiKey);
         // Parse retry metadata from last commit
@@ -30248,44 +30263,24 @@ async function run() {
         const branch = github.context.ref.replace('refs/heads/', '');
         const commitSha = github.context.sha;
         core.info(`Deploying ${repo}@${branch} (${commitSha.substring(0, 7)})`);
-        // Register deployment with LastMile
-        const { deploymentId } = await api.startDeployment({
+        // Start deployment with LastMile (this actually deploys to Railway)
+        const deployment = await api.startDeployment({
             repoUrl: `https://github.com/${repo}`,
             branch,
             commitSha,
         });
-        core.info(`Deployment registered: ${deploymentId}`);
-        // Check if we have Railway context (means Railway GitHub integration is active)
-        const railwayContext = (0, railway_js_1.getRailwayContext)();
-        let deploymentSuccess = false;
-        let deploymentUrl;
-        let railwayDeploymentId;
-        if (railwayContext.serviceId && railwayContext.environmentId && railwayToken) {
-            // Railway GitHub integration is handling the deployment
-            // We just need to wait for it to complete
-            core.info('Waiting for Railway deployment...');
-            const railway = new railway_js_1.RailwayClient(railwayToken);
-            const deployment = await railway.waitForDeployment(railwayContext.serviceId, railwayContext.environmentId);
-            railwayDeploymentId = deployment.id;
-            deploymentSuccess = deployment.status === 'SUCCESS';
-            deploymentUrl = deployment.url;
-            core.info(`Railway deployment ${deployment.status}: ${deploymentUrl || 'no URL'}`);
+        const deploymentId = deployment.deploymentId;
+        core.info(`Deployment started: ${deploymentId}`);
+        core.info(`Status: ${deployment.status}`);
+        // Check deployment result from LastMile API (which deployed to Railway)
+        const deploymentSuccess = deployment.status === 'live' || deployment.status === 'success';
+        const deploymentUrl = deployment.url;
+        const deploymentError = deployment.error;
+        if (deploymentSuccess) {
+            core.info(`Deployment successful: ${deploymentUrl}`);
         }
-        else {
-            // No Railway integration - deployment is handled elsewhere
-            // For now, we assume the deployment happens via Railway's native GitHub integration
-            // and we're just called to handle failures
-            core.info('No Railway token provided - assuming deployment is handled externally');
-            core.info('This action will only handle fix generation if called after a failure');
-            // Check if this is being run after a failure (indicated by retry metadata)
-            if (!retryMeta) {
-                core.info('First run without Railway token - nothing to do');
-                core.info('Configure Railway GitHub integration or provide railway-token input');
-                return;
-            }
-            // We're in a retry loop, so previous deployment must have failed
-            deploymentSuccess = false;
-            railwayDeploymentId = 'unknown';
+        else if (deploymentError) {
+            core.info(`Deployment failed: ${deploymentError}`);
         }
         if (deploymentSuccess) {
             // Success! Mark complete and exit
@@ -30308,7 +30303,7 @@ async function run() {
         // Call LastMile API to analyze failure and get fix
         const analysis = await api.analyzeFailure({
             deploymentId,
-            railwayDeploymentId: railwayDeploymentId || 'unknown',
+            railwayDeploymentId: deploymentId, // Use our deployment ID
             attempt: currentAttempt,
             files,
         });
@@ -30352,151 +30347,6 @@ async function run() {
     }
 }
 run();
-
-
-/***/ }),
-
-/***/ 3081:
-/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
-
-"use strict";
-
-/**
- * Railway deployment utilities
- *
- * Note: This is a simplified client. The actual deployment is triggered
- * by Railway's GitHub integration when we push to the repo.
- * We just need to check the deployment status.
- */
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.RailwayClient = void 0;
-exports.getRailwayContext = getRailwayContext;
-const core = __importStar(__nccwpck_require__(6966));
-const RAILWAY_API = 'https://backboard.railway.app/graphql/v2';
-class RailwayClient {
-    token;
-    constructor(token) {
-        this.token = token;
-    }
-    async query(query, variables) {
-        const response = await fetch(RAILWAY_API, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${this.token}`,
-            },
-            body: JSON.stringify({ query, variables }),
-        });
-        if (!response.ok) {
-            throw new Error(`Railway API error: ${response.status}`);
-        }
-        const json = await response.json();
-        if (json.errors?.length) {
-            throw new Error(`Railway GraphQL error: ${json.errors[0].message}`);
-        }
-        return json.data;
-    }
-    /**
-     * Get the latest deployment for a service
-     */
-    async getLatestDeployment(serviceId, environmentId) {
-        const query = `
-      query GetDeployments($serviceId: String!, $environmentId: String!) {
-        deployments(
-          first: 1
-          input: { serviceId: $serviceId, environmentId: $environmentId }
-        ) {
-          edges {
-            node {
-              id
-              status
-              staticUrl
-            }
-          }
-        }
-      }
-    `;
-        const data = await this.query(query, { serviceId, environmentId });
-        const deployment = data.deployments.edges[0]?.node;
-        if (!deployment) {
-            return null;
-        }
-        return {
-            id: deployment.id,
-            status: deployment.status,
-            url: deployment.staticUrl,
-        };
-    }
-    /**
-     * Wait for deployment to complete (success or failure)
-     */
-    async waitForDeployment(serviceId, environmentId, timeoutMs = 10 * 60 * 1000) {
-        const startTime = Date.now();
-        const pollInterval = 5000; // 5 seconds
-        while (Date.now() - startTime < timeoutMs) {
-            const deployment = await this.getLatestDeployment(serviceId, environmentId);
-            if (!deployment) {
-                core.info('Waiting for deployment to start...');
-                await sleep(pollInterval);
-                continue;
-            }
-            core.info(`Deployment status: ${deployment.status}`);
-            if (['SUCCESS', 'FAILED', 'CRASHED', 'REMOVED'].includes(deployment.status)) {
-                return deployment;
-            }
-            await sleep(pollInterval);
-        }
-        throw new Error('Deployment timed out');
-    }
-}
-exports.RailwayClient = RailwayClient;
-function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
-/**
- * Detect Railway service/environment from environment variables
- * These are set when Railway's GitHub integration triggers a build
- */
-function getRailwayContext() {
-    return {
-        serviceId: process.env.RAILWAY_SERVICE_ID,
-        environmentId: process.env.RAILWAY_ENVIRONMENT_ID,
-        deploymentId: process.env.RAILWAY_DEPLOYMENT_ID,
-    };
-}
 
 
 /***/ }),

@@ -7,6 +7,8 @@ const API_BASE = 'https://api.lastmile.sh';
 export interface StartDeploymentResponse {
   deploymentId: string;
   status: string;
+  url?: string;
+  error?: string;
 }
 
 export interface FixFile {
@@ -70,8 +72,34 @@ export class LastMileAPI {
     repoUrl: string;
     branch: string;
     commitSha?: string;
+    projectName?: string;
+    withDatabase?: boolean;
   }): Promise<StartDeploymentResponse> {
-    return this.request<StartDeploymentResponse>('POST', '/v1/deploy/start', data);
+    // Use cloud deploy endpoint which actually deploys to Railway
+    const response = await this.request<{
+      id: string;
+      status: string;
+      url?: string;
+      error?: string;
+    }>('POST', '/v1/cloud/deploy', {
+      projectName: data.projectName || this.extractProjectName(data.repoUrl),
+      repoUrl: data.repoUrl,
+      branch: data.branch,
+      withDatabase: data.withDatabase || false,
+    });
+
+    return {
+      deploymentId: response.id,
+      status: response.status,
+      url: response.url,
+      error: response.error,
+    };
+  }
+
+  private extractProjectName(repoUrl: string): string {
+    // Extract repo name from URL: https://github.com/owner/repo -> repo
+    const match = repoUrl.match(/\/([^\/]+?)(?:\.git)?$/);
+    return match ? match[1] : 'app';
   }
 
   async analyzeFailure(data: {
